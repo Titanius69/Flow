@@ -1,6 +1,19 @@
 [package]
-name = "Flow-Proxy"
-version = "0.1.0"
-edition = "2024"
+name = "flow-proxy"
+version = "0.2.0"
+edition = "2021"
 
 [dependencies]
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+hmac = "0.12"
+sha2 = "0.10"
+md-5 = "0.10"
+flate2 = "1"
