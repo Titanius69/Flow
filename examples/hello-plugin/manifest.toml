@@ -1,0 +1,8 @@
+[plugin]
+id = "hello"
+name = "Hello"
+version = "0.1.0"
+authors = ["Flow-Proxy"]
+description = "Greets players and adds /hub and /count"
+api-version = 1
+library = "hello_plugin"

@@ -4,13 +4,26 @@ use super::varint::{varint_size, write_varint};
 /// These operate on `Vec<u8>` for encoding (push-based) and byte slices for decoding.
 
 /// Reads a UTF-8 string prefixed by a VarInt length.
+///
+/// The length is validated before it is used. A negative VarInt cast straight
+/// to `usize` becomes an enormous number, and adding it to the offset overflows
+/// rather than failing a bounds check.
 pub fn read_string(data: &[u8]) -> Result<(String, usize), anyhow::Error> {
     let (len, consumed) = super::varint::read_varint(data)?;
+    if len < 0 {
+        anyhow::bail!("negative string length {}", len);
+    }
     let len = len as usize;
     let start = consumed;
-    let end = start + len;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| anyhow::anyhow!("string length {} overflows the buffer offset", len))?;
     if end > data.len() {
-        anyhow::bail!("string length {} exceeds remaining data {}", len, data.len() - start);
+        anyhow::bail!(
+            "string length {} exceeds remaining data {}",
+            len,
+            data.len() - start
+        );
     }
     let s = String::from_utf8(data[start..end].to_vec())?;
     Ok((s, end))
@@ -75,11 +88,20 @@ pub fn write_long(buf: &mut Vec<u8>, val: i64) {
 /// Reads a VarInt-prefixed byte array.
 pub fn read_byte_array(data: &[u8]) -> Result<(Vec<u8>, usize), anyhow::Error> {
     let (len, consumed) = super::varint::read_varint(data)?;
+    if len < 0 {
+        anyhow::bail!("negative byte array length {}", len);
+    }
     let len = len as usize;
     let start = consumed;
-    let end = start + len;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| anyhow::anyhow!("byte array length {} overflows the buffer offset", len))?;
     if end > data.len() {
-        anyhow::bail!("byte array length {} exceeds remaining data {}", len, data.len() - start);
+        anyhow::bail!(
+            "byte array length {} exceeds remaining data {}",
+            len,
+            data.len() - start
+        );
     }
     Ok((data[start..end].to_vec(), end))
 }
@@ -88,4 +110,43 @@ pub fn read_byte_array(data: &[u8]) -> Result<(Vec<u8>, usize), anyhow::Error> {
 pub fn write_byte_array(buf: &mut Vec<u8>, bytes: &[u8]) {
     write_varint(buf, bytes.len() as i32);
     buf.extend_from_slice(bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negative_string_length_is_rejected_not_wrapped() {
+        // VarInt -1 encodes as five 0xFF-ish bytes; as usize it would be huge.
+        let mut data = Vec::new();
+        write_varint(&mut data, -1);
+        data.extend_from_slice(b"abc");
+        assert!(read_string(&data).is_err());
+    }
+
+    #[test]
+    fn negative_byte_array_length_is_rejected() {
+        let mut data = Vec::new();
+        write_varint(&mut data, -5);
+        data.extend_from_slice(b"abc");
+        assert!(read_byte_array(&data).is_err());
+    }
+
+    #[test]
+    fn oversized_length_fails_the_bounds_check() {
+        let mut data = Vec::new();
+        write_varint(&mut data, 1_000_000);
+        data.extend_from_slice(b"abc");
+        assert!(read_string(&data).is_err());
+    }
+
+    #[test]
+    fn string_round_trips() {
+        let mut buf = Vec::new();
+        write_string(&mut buf, "árvíztűrő");
+        let (s, n) = read_string(&buf).unwrap();
+        assert_eq!(s, "árvíztűrő");
+        assert_eq!(n, buf.len());
+    }
 }

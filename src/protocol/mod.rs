@@ -7,3 +7,7 @@ pub mod status;
 pub mod login;
 pub mod forwarding;
 pub mod connection;
+pub mod packets;
+pub mod nbt;
+pub mod javaio;
+pub mod plugin_message;

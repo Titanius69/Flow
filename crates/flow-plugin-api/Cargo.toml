@@ -1,0 +1,7 @@
+[package]
+name = "flow-plugin-api"
+version = "1.0.0"
+edition = "2021"
+description = "Developer API for writing Flow-Proxy plugins in Rust"
+
+[dependencies]

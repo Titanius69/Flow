@@ -1,0 +1,13 @@
+[package]
+name = "hello_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hello_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The proxy rewrites this placeholder to the API crate it ships with, so the
+# plugin and the proxy are always built by the same toolchain.
+flow-plugin-api = { path = "$FLOW_PLUGIN_API" }

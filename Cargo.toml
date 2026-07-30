@@ -1,7 +1,13 @@
 [package]
 name = "flow-proxy"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
+
+[workspace]
+members = [".", "crates/flow-plugin-api", "crates/fpkg"]
+# Plugins are built on their own by the proxy at startup, not as part of this
+# workspace, so their manifests must stay independent.
+exclude = ["examples/hello-plugin", "plugins", "fuzz"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -17,3 +23,6 @@ hmac = "0.12"
 sha2 = "0.10"
 md-5 = "0.10"
 flate2 = "1"
+libloading = "0.8"
+flow-plugin-api = { path = "crates/flow-plugin-api" }
+fpkg = { path = "crates/fpkg" }

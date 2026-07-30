@@ -39,6 +39,9 @@ impl RawPacket {
     /// Minecraft packet. Returns the decoded packet and the number of bytes consumed.
     pub fn decode(data: &[u8]) -> Result<(Self, usize), anyhow::Error> {
         let (packet_length, mut consumed) = read_varint(data)?;
+        if packet_length < 0 {
+            anyhow::bail!("negative packet length {}", packet_length);
+        }
         let packet_length = packet_length as usize;
 
         if packet_length > MAX_PACKET_SIZE {
@@ -49,18 +52,26 @@ impl RawPacket {
             );
         }
 
-        if data.len() < consumed + packet_length {
+        let frame_end = consumed
+            .checked_add(packet_length)
+            .ok_or_else(|| anyhow::anyhow!("packet length {} overflows", packet_length))?;
+        if data.len() < frame_end {
             anyhow::bail!(
                 "not enough data: need {} bytes, have {}",
-                consumed + packet_length,
+                frame_end,
                 data.len()
             );
         }
 
-        let (id, id_size) = read_varint(&data[consumed..])?;
+        // Read the id from inside the frame only. Reading from the whole buffer
+        // would let a VarInt run past the declared length, making `id_size`
+        // larger than the frame and underflowing the payload size below.
+        let (id, id_size) = read_varint(&data[consumed..frame_end])?;
         consumed += id_size;
 
-        let payload_len = packet_length - id_size;
+        let payload_len = packet_length
+            .checked_sub(id_size)
+            .ok_or_else(|| anyhow::anyhow!("packet id is longer than the declared frame"))?;
         let payload = data[consumed..consumed + payload_len].to_vec();
         consumed += payload_len;
 

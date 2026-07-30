@@ -17,6 +17,7 @@
 //! independently, so the reader and writer each carry their own threshold.
 
 use std::io::{Read, Write};
+use std::time::Duration;
 
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
@@ -26,21 +27,34 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use super::packet::{RawPacket, MAX_PACKET_SIZE};
 use super::varint::{read_varint, write_varint};
 
+/// A VarInt encodes a 32-bit value in at most five bytes.
+const MAX_VARINT_BYTES: usize = 5;
+
 /// Reads a VarInt one byte at a time straight off the socket. We cannot read
 /// ahead here: the length prefix is the only thing telling us where the frame
 /// ends, so over-reading would steal bytes from the next packet.
 async fn read_varint_async<R: AsyncRead + Unpin>(reader: &mut R) -> anyhow::Result<i32> {
     let mut result: i32 = 0;
     let mut shift: u32 = 0;
+    let mut bytes_read = 0usize;
+
     loop {
         let mut byte = [0u8; 1];
         reader.read_exact(&mut byte).await?;
         let b = byte[0];
+
+        // The length check has to happen *before* the shift. A VarInt is at
+        // most five bytes, and on a sixth byte `shift` would be 35, which
+        // overflows a 32-bit shift and panics. Any peer can send six bytes with
+        // the continuation bit set, so this is reachable from the network.
+        bytes_read += 1;
+        if bytes_read > MAX_VARINT_BYTES {
+            anyhow::bail!("VarInt longer than {} bytes", MAX_VARINT_BYTES);
+        }
+
         result |= ((b & 0x7F) as i32) << shift;
         shift += 7;
-        if shift > 35 {
-            anyhow::bail!("VarInt too large");
-        }
+
         if b & 0x80 == 0 {
             return Ok(result);
         }
@@ -52,6 +66,9 @@ pub struct FrameReader<R> {
     inner: R,
     /// `None` until Set Compression has been negotiated.
     threshold: Option<i32>,
+    /// Fails the read if no complete frame arrives in time. A connection that
+    /// opens and then says nothing otherwise holds a task and a socket forever.
+    read_timeout: Option<Duration>,
 }
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
@@ -59,7 +76,13 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         Self {
             inner,
             threshold: None,
+            read_timeout: None,
         }
+    }
+
+    /// Sets the idle timeout for a single frame. `None` waits forever.
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        self.read_timeout = timeout;
     }
 
     /// Enables compression on this half. A negative threshold disables it again,
@@ -73,7 +96,19 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 
     /// Reads one frame and returns its decompressed body (packet id + payload).
+    ///
+    /// On timeout the connection is finished: a partly-consumed length prefix
+    /// cannot be resumed, so callers must drop the reader rather than retry.
     pub async fn read_frame(&mut self) -> anyhow::Result<Vec<u8>> {
+        match self.read_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, self.read_frame_inner())
+                .await
+                .map_err(|_| anyhow::anyhow!("no data for {:?}", timeout))?,
+            None => self.read_frame_inner().await,
+        }
+    }
+
+    async fn read_frame_inner(&mut self) -> anyhow::Result<Vec<u8>> {
         let packet_length = read_varint_async(&mut self.inner).await?;
         if packet_length < 0 || packet_length as usize > MAX_PACKET_SIZE {
             anyhow::bail!("invalid packet length {}", packet_length);
@@ -96,7 +131,12 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             anyhow::bail!("invalid uncompressed size {}", data_length);
         }
 
-        let mut decoder = ZlibDecoder::new(body);
+        // Bound the inflate by the declared size. Without this a small frame of
+        // highly compressible bytes expands unchecked -- roughly 1000:1 -- and
+        // one 2 MB frame could allocate gigabytes before the size check below
+        // ever ran. Reading one byte past the declared length still lets an
+        // over-long stream be detected rather than silently truncated.
+        let mut decoder = ZlibDecoder::new(body).take(data_length as u64 + 1);
         let mut out = Vec::with_capacity(data_length as usize);
         decoder.read_to_end(&mut out)?;
 
@@ -208,6 +248,15 @@ mod tests {
     #[tokio::test]
     async fn above_threshold_is_deflated() {
         roundtrip(256, vec![9; 4096]).await;
+    }
+
+    #[tokio::test]
+    async fn an_overlong_varint_length_is_rejected_not_a_panic() {
+        // Six bytes with the continuation bit set. Before the length check was
+        // moved ahead of the shift, this panicked with a shift overflow.
+        let data = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F];
+        let mut reader = FrameReader::new(&data[..]);
+        assert!(reader.read_frame().await.is_err());
     }
 
     #[tokio::test]

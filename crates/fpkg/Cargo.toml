@@ -1,0 +1,15 @@
+[package]
+name = "fpkg"
+version = "1.0.0"
+edition = "2021"
+description = "Build and packaging tool for Flow-Proxy plugins"
+
+[[bin]]
+name = "fpkg"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
